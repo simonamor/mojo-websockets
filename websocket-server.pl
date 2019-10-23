@@ -12,62 +12,6 @@ use Data::Dumper;
 
 my $clients = {};
 
-
-sub wait_for_reply_p {
-    my $client = shift;
-    my $req_id = shift;
-
-    # Although this is synchronous, we're waiting on an
-    # async process so we use begin/end to kick the oop
-
-    # Wait for a response to request $req_id
-    my $max_wait = 10; # 10 seconds;
-    my $check_delay = 1; # 0.1 seconds
-
-    my @timers = ();
-    my $waiting_for = $check_delay;
-    while ($waiting_for <= $max_wait) {
-        my $t_id = Mojo::Promise->new(sub {
-            my ($resolve, $reject) = @_;
-
-            if (exists $clients->{ $client }->replies->{ $req_id }) {
-                warn "got response for $waiting_for";
-                $resolve->("success");
-
-                #foreach (@timers) { Mojo::IOLoop->remove($_); }
-            }
-        })->timer($waiting_for);
-
-        push @timers, $t_id;
-        $waiting_for += $check_delay;
-    }
-
-    my $promise = Mojo::Promise->race(@timers);
-    return $promise;
-
-#    my $promise = Mojo::Promise->new(sub {
-#        my ($resolve, $reject) = @_;
-#
-#        warn "Request id $req_id";
-#
-#        warn Dumper($clients->{ $client }->replies);
-#        if (exists $clients->{ $client }->replies->{ $req_id }) {
-#            $resolve->("Success");
-#            warn "here " . __LINE__;
-#            return;
-#        }
-#
-#        warn ($max_wait <= 0 ? "timed out" : "replied") . ": " . __LINE__ . " at " . scalar(localtime(time()));
-#
-#        if ($max_wait <= 0) {
-#            $reject->("timed out");
-#        } else {
-#            $resolve->("success");
-#        }
-#    });
-#    return $promise;
-}
-
 post '/send' => sub {
     my $c = shift;
 
@@ -88,40 +32,78 @@ post '/send' => sub {
         return;
     }
 
-    $c->render_later;
-
     my $wsc = $clients->{ $client };
+
+    warn "line: " . __LINE__ . " at " . scalar(localtime(time()));
+    my $reply_promise = Mojo::Promise->new(sub {
+        my ($resolve, $reject) = @_;
+
+        warn "promise triggered line: " . __LINE__ . " at " . scalar(localtime(time()));
+
+#        my $response = $wsc->replies->{ $req_id };
+#        $resolve->($response);
+    });
+    warn "promise attached to $req_id: " . __LINE__;
+    $wsc->promises->{ $req_id } = $reply_promise;
+
+    # This might need some pre-checks like Mojolicious::Controller->on()
+    # Adds a second message handler
+    $wsc->tx->on(message => sub {
+        my ($c, $msg) = @_;
+        # $c is $wsc->tx
+
+        my $json = eval { decode_json($msg); };
+        if ($@ || !defined $json) {
+            warn "line: " . __LINE__ . " at " . scalar(localtime(time()));
+            return;
+        }
+        unless (exists $json->{ requestId } && defined $json->{ requestId } && $json->{ requestId } =~ /^[0-9a-z\-]+$/i) {
+            warn "line: " . __LINE__ . " at " . scalar(localtime(time()));
+            return;
+        }
+        my $inc_id = $json->{ requestId } || "";
+        if ($inc_id eq $req_id) {
+            warn "line: " . __LINE__ . " at " . scalar(localtime(time()));
+            ## Need to return the promise or something...
+            $reply_promise->resolve($json);
+        }
+        warn "line: " . __LINE__ . " at " . scalar(localtime(time()));
+        return;
+    });
 
     warn "line: " . __LINE__ . " at " . scalar(localtime(time()));
     $wsc->tx->send({ json => { op => $op, requestId => $req_id, data => $mdata }});
     warn "line: " . __LINE__ . " at " . scalar(localtime(time()));
 
-    my $timer_promise = Mojo::Promise->timeout(10 => "timed out");
-    my $reply_promise = wait_for_reply_p($client, $req_id);
+    $c->render_later;
 
+    my $timer_promise = Mojo::Promise->timeout(10 => "timed out");
     my $output_promise = Mojo::Promise->race($timer_promise, $reply_promise);
     warn "line: " . __LINE__;
     $output_promise->then(
         sub {
             my @value = @_;
 
-            my $rep = delete $wsc->replies->{ $req_id };
+            delete $wsc->replies->{ $req_id };
+            my $rep = $value[0]->{ data };
 
             warn "line: " . __LINE__ . " at " . scalar(localtime(time()));
-            warn "ok: " . Dumper($rep);
+            warn "ok: " . Dumper(@value);
             $c->render(text => "Ok - " . encode_json($rep), format => "txt");
         },
 
         sub {
-            my $rep = delete $wsc->replies->{ $req_id };
+            my @value = @_;
+
+            delete $wsc->replies->{ $req_id };
+            my $rep = $value[0]->{ data };
 
             warn "line: " . __LINE__ . " at " . scalar(localtime(time()));
-            warn "err: " . Dumper($rep);
+            warn "err: " . Dumper(@value);
             $c->render(text => "Err - timeout waiting for response", format => "txt");
         }
     );
 
-    warn "line: " . __LINE__;
 };
 
 websocket '/link' => sub {

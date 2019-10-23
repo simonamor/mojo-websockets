@@ -31,6 +31,12 @@ has 'replies' => (
     default => sub { {} },
 );
 
+has 'promises' => (
+    is => 'rw',
+    isa => 'HashRef',
+    default => sub { {} },
+);
+
 sub log {
     my $self = shift;
     my $c = shift;
